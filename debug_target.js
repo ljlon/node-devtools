@@ -75,10 +75,9 @@ var DebugTarget = function(targetSocket, endpoint, argv) {
    * @type {string}
    * @private
    */
-  this.targetBuffer_ = '';
+  this.targetBuffer_ = null;
 
   // Target socket.
-  this.targetSocket_.setEncoding('utf8');
   this.targetSocket_.setKeepAlive(true);
   this.targetSocket_.on('data', (function(data, flags) {
     this.processTargetMessage_(data);
@@ -108,7 +107,7 @@ DebugTarget.TargetInfo;
  * @private
  */
 DebugTarget.prototype.processTargetMessage_ = function(data) {
-  this.targetBuffer_ += data;
+  this.targetBuffer_ = this.targetBuffer_?Buffer.concat([this.targetBuffer_, data], this.targetBuffer_.length + data.length):data;
 
   // Run a pass over the buffer. If we can parse a complete message, dispatch
   // it.
@@ -127,7 +126,11 @@ DebugTarget.prototype.processTargetMessage_ = function(data) {
       if (linefeed == -1) {
         return false;
       }
-      var line = this.targetBuffer_.substring(offset, linefeed).trim();
+
+      var lineBuffer = new Buffer(linefeed - offset);
+      this.targetBuffer_.copy(lineBuffer, 0, offset, linefeed);
+      var line = lineBuffer.toString().trim();
+
       offset = linefeed + 1;
       if (line.length) {
         var parts = line.split(':');
@@ -140,14 +143,20 @@ DebugTarget.prototype.processTargetMessage_ = function(data) {
         if (!contentLength) {
           // No content, done.
           this.dispatchTargetMessage_(headers, null);
-          this.targetBuffer_ = this.targetBuffer_.substring(offset);
+          this.targetBuffer_ = this.targetBuffer_.slice(offset);
           return true;
         } else {
+
           if (this.targetBuffer_.length - offset >= contentLength) {
             // Content present.
+            var messageBuf = new Buffer(contentLength);
+            this.targetBuffer_.copy(messageBuf, 0, offset, offset + contentLength);
+
             this.dispatchTargetMessage_(
-                headers, this.targetBuffer_.substr(offset, contentLength));
-            this.targetBuffer_ = this.targetBuffer_.substring(offset + contentLength);
+                headers, messageBuf.toString());
+
+            this.targetBuffer_ = this.targetBuffer_.slice(offset + messageBuf.length);
+
             return true;
           }
         }
@@ -168,7 +177,7 @@ DebugTarget.prototype.dispatchTargetMessage_ = function(headers, content) {
     if (headers['Type'] == 'connect') {
       this.targetInfo_ = {
         host: headers['Embedding-Host'],
-        isNode: headers['Embedding-Host'].indexOf('node') == 0,
+        isNode: (headers['Embedding-Host']?headers['Embedding-Host'].indexOf('node') == 0:false),
         v8: headers['V8-Version']
       };
       this.emit('connect', this.targetInfo_);
